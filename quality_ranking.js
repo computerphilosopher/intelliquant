@@ -38,34 +38,6 @@ function getEarningGrowth(stock, years) {
     return ret;
 }
 
-function getRevenueGrowthRatio(stock) {
-	stock.loadPrevData(2, 0, 0)
-    try {
-        var revenueGrowthRatioTotal = 1;
-        var revenueGrowthRatioStrike = 0;
-        
-        var prevRevenue = stock.getFundamentalRevenue(8);
-        
-        for (var i = 7; i >= 0; i--) {
-            var revenue = stock.getFundamentalRevenue(i);
-            var revenueGrowthRatio = revenue / prevRevenue;
-            
-            /*
-            if (revenueGrowthRatio < 1) {
-                revenueGrowthRatioStrike++;
-                if (revenueGrowthRatioStrike == 4)
-                    return 0;
-            }
-            */
-            revenueGrowthRatioTotal *= revenueGrowthRatio;
-          	prevRevenue = revenue;  
-        }
-        return revenueGrowthRatioTotal;
-    } catch(e) {
-        logger.debug(e); 
-    }
-}
-
 function getPEGR(stock) {
     return stock.getPER() / getEarningGrowth(stock, 3);
 }
@@ -209,7 +181,7 @@ function stockFilter(stock) {
     var filterDept = (stock.getFundamentalTotalLiability(0) * 100 / stock.getFundamentalTotalEquity(0)) < 150 || stock.sector == 'S022';
     var filterRatio = (stock.getFundamentalCurrentAsset(0) * 100 / stock.getFundamentalCurrentLiability(0)) > 150;
     var filterStock = stock.getNoOfShare(0) <= stock.getNoOfShare(8);
-    //var filterQual = filterDept && filterRatio && filterStock;
+    var filterQual = filterDept && filterRatio && filterStock;
     
     var filterDivYield = stock.getFundamentalDividend(0) > 0;
     var filterDivPay = 20 < stock.getDividendPayoutRatio() && stock.getDividendPayoutRatio()  < 80;
@@ -217,6 +189,8 @@ function stockFilter(stock) {
     
     var filterAbsoluteMomentum = stock.getClose(252) > stock.getOpen();
     var filterMomentum = filterAbsoluteMomentum;
+    
+    var filterCap = stock.capLevel == 4;
     
     return filterValue && filterChina && filterHoldings && filterStock;
 }
@@ -242,26 +216,30 @@ function getGrowthScore(stock) {
           stock.getFundamentalSalesCost(7));
     score += curGP > prevGP;
     
-    var curProfit = stock.getFundamentalNetProfit(0) + stock.getFundamentalNetProfit(1) +
-        stock.getFundamentalNetProfit(2) + stock.getFundamentalNetProfit(3);
-    var prevProfit =  stock.getFundamentalNetProfit(4) + stock.getFundamentalNetProfit(5) +
-        stock.getFundamentalNetProfit(6) + stock.getFundamentalNetProfit(7);
-    //score += curProfit > prevProfit;
-    
     var curCashFlow = stock.getFundamentalOperatingCashFlow(0) + stock.getFundamentalOperatingCashFlow(1) + 
         stock.getFundamentalOperatingCashFlow(2) + stock.getFundamentalOperatingCashFlow(3);
     var prevCashFlow = stock.getFundamentalOperatingCashFlow(4) + stock.getFundamentalOperatingCashFlow(5) + 
         stock.getFundamentalOperatingCashFlow(6) + stock.getFundamentalOperatingCashFlow(7);
     score += curCashFlow > prevCashFlow; 
     
-    //score += stock.getFundamentalTotalLiability(0) < stock.getFundamentalTotalLiability(4);
-    //score += stock.getFundamentalInventoryAsset(0) < stock.getFundamentalInventoryAsset(4);
+    var curProfit = stock.getFundamentalNetProfit(0) + stock.getFundamentalNetProfit(1) +
+        stock.getFundamentalNetProfit(2) + stock.getFundamentalNetProfit(3);
+    var prevProfit =  stock.getFundamentalNetProfit(4) + stock.getFundamentalNetProfit(5) +
+        stock.getFundamentalNetProfit(6) + stock.getFundamentalNetProfit(7);
+    score += curProfit > prevProfit;
+    
     //유동비율
     score += (stock.getFundamentalCurrentAsset(0) / stock.getFundamentalCurrentLiability(0)) >
         (stock.getFundamentalCurrentAsset(4) / stock.getFundamentalCurrentLiability(4));
-    //자산 회전율
-    score += (stock.getFundamentalRevenue(0) / stock.getFundamentalTotalAsset(0)) >
-        stock.getFundamentalRevenue(4) / stock.getFundamentalTotalAsset(4);
+    
+    //부채비율 
+    var cur_debt = (stock.getFundamentalTotalAsset(0) - stock.getFundamentalTotalEquity(0) 
+                    - stock.getFundamentalTotalLiability(0)) / stock.getFundamentalTotalAsset(0);
+    var last_debt = (stock.getFundamentalTotalAsset(4) - stock.getFundamentalTotalEquity(4) - 
+                    stock.getFundamentalCurrentLiability(4)) / stock.getFundamentalTotalAsset(4);
+    score += (cur_debt < last_debt);
+    
+    //재고 자산 회전율
     score += (stock.getFundamentalRevenue(0) / stock.getFundamentalInventoryAsset(0)) >
         stock.getFundamentalRevenue(4) / stock.getFundamentalInventoryAsset(4);
     
@@ -273,22 +251,40 @@ function getGrowthScore(stock) {
 
 }
 
+function getRevenueGrowthRatio(stock, years) {
+    var add = 4 * years;
+    var cur = stock.getFundamentalRevenue(0) +  stock.getFundamentalRevenue(1) +
+        stock.getFundamentalRevenue(2) + stock.getFundamentalRevenue(3);
+    var prev = stock.getFundamentalRevenue(add) + stock.getFundamentalRevenue(1 + add) +
+        stock.getFundamentalRevenue(2 + add) + stock.getFundamentalRevenue(3 + add)
+    
+    return cur - prev / Math.abs(prev);
+}
+
 // 4) 포트폴리오 빌더 함수 정의 - 필터링 및 팩터 기반 종목 선정
 function stockPortfolioBuilder(targetSize) {
     var universe = IQStock.filter(stockFilter);
+    //Quality
     var sortedByGPA = universe.slice().sort(function(a,b){return getGPA(b)  - getGPA(a);}); // 수익성
-    var sortedByNCAV = universe.slice().sort(function(a, b) {return getNCAVFactor(b) - getNCAVFactor(a);}); // valueation
-    var sortedByGrowth = universe.slice().sort(function(a, b) { return getGrowthScore(b) - getGrowthScore(a) }) // 성장
     var sortedByFscore = universe.slice().sort(function(a,b){return getFscore(b)  - getFscore(a);}); // 성장 및 안정성
+    var sortedByGscore = universe.slice().sort(function(a, b) { return getGrowthScore(b) - getGrowthScore(a) }); // 성장
+    var sortedByGrowth = universe.slice().sort(function(a, b) { return getRevenueGrowthRatio(b, 3) - getRevenueGrowthRatio(a, 3) });
+    
+    //valueation
+    var sortedByNCAV = universe.slice().sort(function(a, b) {return getNCAVFactor(b) - getNCAVFactor(a);}); 
+    var sortedByPSR = universe.slice().sort(function(a, b) {return getPSR(a) - getPSR(b);});
+    var sortedByPBR = universe.slice().sort(function(a, b) {return a.getPBR() - b.getPBR();}); // valueation
+    
     universe.forEach(function(stock) {
-      stock.setScore('rank_sum', sortedByGPA.indexOf(stock) + sortedByNCAV.indexOf(stock) + 
-                     sortedByGrowth.indexOf(stock));
+      stock.setScore('rank_sum', sortedByGPA.indexOf(stock) + sortedByGscore.indexOf(stock) + 
+                     sortedByPBR.indexOf(stock) + sortedByPSR.indexOf(stock));
     });
  
   var factorRank = universe.slice().sort(function(a, b){return a.getScore('rank_sum')-b.getScore('rank_sum');});
   return factorRank.slice(0, targetSize); 
 
 }
+
 
 // 5) 리밸런싱 수행 - 시뮬레이션 기간 동안 장 마감 후 매일 자동으로 호출되는 함수
 function onDayClose(now) {
